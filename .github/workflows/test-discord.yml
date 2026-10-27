@@ -1,0 +1,37 @@
+name: Test Discord notification
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test_webhook:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Send connection test
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import urllib.request
+
+          url = os.environ.get('DISCORD_WEBHOOK_URL', '')
+          if not url.startswith('https://discord.com/api/webhooks/'):
+              raise SystemExit('DISCORD_WEBHOOK_URL が未設定または正しいURLではありません')
+          payload = json.dumps({
+              'content': '✅ 大井競馬・自動予想通知：Discord接続テスト成功',
+              'allowed_mentions': {'parse': []}
+          }).encode('utf-8')
+          request = urllib.request.Request(
+              url,
+              data=payload,
+              method='POST',
+              headers={'Content-Type': 'application/json', 'User-Agent': 'OiOddsAlert/0.1'},
+          )
+          with urllib.request.urlopen(request, timeout=15) as response:
+              if response.status not in (200, 204):
+                  raise SystemExit(f'Discord HTTP {response.status}')
+          print('Discordへの通知テストは成功しました')
+          PY
