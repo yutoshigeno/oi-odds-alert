@@ -1,0 +1,74 @@
+name: Oi racing paper-pick monitor
+on:
+  schedule:
+    # 12:00〜21:59 JST, 5分おき。GitHub側の遅延・欠落の可能性があります。
+    - cron: '*/5 3-12 * * *'
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: oi-racing-monitor
+  cancel-in-progress: false
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: 公式ZIPの確認と紙上買い目通知
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: python monitor.py
+      - name: 送信済み状態の保存
+        if: success()
+        run: |
+          if ! git diff --quiet -- state.json; then
+            git config user.name "oi-monitor-bot"
+            git config user.email "oi-monitor-bot@users.noreply.github.com"
+            git add state.json
+            git commit -m "Update monitor notification state [skip ci]"
+            git pull --rebase
+            git push
+          fi
+name: Test Discord notification
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test_webhook:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Send connection test
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import urllib.request
+
+          url = os.environ.get('DISCORD_WEBHOOK_URL', '')
+          if not url.startswith('https://discord.com/api/webhooks/'):
+              raise SystemExit('DISCORD_WEBHOOK_URL が未設定または正しいURLではありません')
+          payload = json.dumps({
+              'content': '✅ 大井競馬・自動予想通知：Discord接続テスト成功',
+              'allowed_mentions': {'parse': []}
+          }).encode('utf-8')
+          request = urllib.request.Request(
+              url,
+              data=payload,
+              method='POST',
+              headers={'Content-Type': 'application/json', 'User-Agent': 'OiOddsAlert/0.1'},
+          )
+          with urllib.request.urlopen(request, timeout=15) as response:
+              if response.status not in (200, 204):
+                  raise SystemExit(f'Discord HTTP {response.status}')
+          print('Discordへの通知テストは成功しました')
+          PY
