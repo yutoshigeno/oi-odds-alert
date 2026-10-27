@@ -2,7 +2,7 @@ name: Oi racing paper-pick monitor
 on:
   schedule:
     # 12:00〜21:59 JST, 5分おき。GitHub側の遅延・欠落の可能性があります。
-    - cron: '*/5 3-12 * * *'
+    - cron: '2-57/5 3-12 * * *'
   workflow_dispatch:
 permissions:
   contents: write
