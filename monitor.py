@@ -8,6 +8,7 @@ import math
 import os
 import re
 import sys
+import time
 import unicodedata
 import urllib.error
 import urllib.request
@@ -96,6 +97,38 @@ def load_zip(source_url, local_file=''):
     filename_match = re.search(r'(20\d{6})_(\d{10})_(?:odds|race)\.zip', disposition)
     published_at = datetime.fromtimestamp(int(filename_match.group(2)), TZ) if filename_match else None
     return rows_by_kind, published_at
+
+
+def load_source(label, source_url, local_file='', *, retry_budget=None):
+    """Share one retry and a 240-second fetch budget across both sources.
+
+    The deadline governs request admission, not a hard cancellation of urllib I/O.
+    Reserve 25 seconds for the next request and 60 seconds of the five-minute job
+    for parsing/notifications/state and runner overhead.
+    """
+    if retry_budget is None:
+        retry_budget = {'remaining': 1, 'deadline': time.monotonic() + 240}
+    for attempt in range(2):
+        if time.monotonic() + 25 > retry_budget['deadline']:
+            raise RuntimeError(f'{label}: 取得時間予算不足のため通知しません')
+        try:
+            return load_zip(source_url, local_file)
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
+            if isinstance(exc, urllib.error.HTTPError):
+                detail = f'HTTP {exc.code}'
+                transient = exc.code in (404, 408, 429) or 500 <= exc.code <= 599
+            else:
+                detail = type(exc).__name__
+                transient = True
+            # Do not expose custom URL credentials/query strings in logs.
+            print(f'{label}: {detail} (attempt {attempt + 1}/2)', file=sys.stderr)
+            if (local_file or not transient or attempt == 1
+                    or retry_budget['remaining'] == 0
+                    or time.monotonic() + 120 + 25 > retry_budget['deadline']):
+                raise RuntimeError(f'{label}: {detail}; 取得失敗のため通知しません') from exc
+            retry_budget['remaining'] -= 1
+            print(f'{label}: 120秒待機して1回だけ再取得します', file=sys.stderr)
+            time.sleep(120)
 
 
 def build_races(race_rows, horse_rows, date_key):
@@ -226,11 +259,14 @@ def phase_for_minutes(minutes):
     return None
 
 
-def run(now=None):
-    now = now or datetime.now(TZ)
+def run(now=None, *, clock=None):
+    # Explicit time is retained for the offline demo; production uses a live clock.
+    clock = clock or ((lambda fixed=now: fixed) if now is not None else (lambda: datetime.now(TZ)))
+    retry_budget = {'remaining': 1, 'deadline': time.monotonic() + 240}
+    races_raw, _ = load_source('race', os.getenv('NAR_RACE_ZIP_URL', RACE_URL), LOCAL_RACE_ZIP, retry_budget=retry_budget)
+    odds_raw, odds_at = load_source('odds', os.getenv('NAR_ODDS_ZIP_URL', ODDS_URL), LOCAL_ODDS_ZIP, retry_budget=retry_budget)
+    now = clock()
     date_key = now.strftime('%Y%m%d')
-    races_raw, _ = load_zip(os.getenv('NAR_RACE_ZIP_URL', RACE_URL), LOCAL_RACE_ZIP)
-    odds_raw, odds_at = load_zip(os.getenv('NAR_ODDS_ZIP_URL', ODDS_URL), LOCAL_ODDS_ZIP)
     races = build_races(races_raw.get('races', []), races_raw.get('horses', []), date_key)
     odds = build_win_odds(odds_raw.get('odds', []), date_key)
     if not races:
@@ -294,3 +330,4 @@ if __name__ == '__main__':
     except (RuntimeError, ValueError, urllib.error.URLError, OSError, zipfile.BadZipFile) as exc:
         print(f'ERROR: {exc}', file=sys.stderr)
         sys.exit(1)
+
